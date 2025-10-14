@@ -5,7 +5,6 @@ use std::{thread, time};
 
 use anyhow::Result;
 use chirpstack_api::{gw, prost::Message};
-use rand::Rng;
 
 use super::commands;
 use super::config::Server;
@@ -35,9 +34,8 @@ struct State {
 
 impl State {
     fn set_pull_data_token(&self) -> u16 {
-        let mut rng = rand::rng();
         let mut token = self.pull_data_token.lock().unwrap();
-        *token = rng.random();
+        *token = getrandom::u32().unwrap() as u16;
         *token
     }
 
@@ -55,9 +53,8 @@ impl State {
     }
 
     fn set_push_data_token(&self) -> u16 {
-        let mut rng = rand::rng();
         let mut token = self.push_data_token.lock().unwrap();
-        *token = rng.random();
+        *token = getrandom::u32().unwrap() as u16;
         *token
     }
 
