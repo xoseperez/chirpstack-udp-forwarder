@@ -373,14 +373,13 @@ fn events_stats(state: &Arc<State>, stats: chirpstack_api::gw::GatewayStats) {
 }
 
 fn events_up(state: &Arc<State>, up: chirpstack_api::gw::UplinkFrame) {
-    if let Some(rx_info) = &up.rx_info {
-        if !((rx_info.crc_status() == gw::CrcStatus::CrcOk && state.forward_crc_ok)
+    if let Some(rx_info) = &up.rx_info
+        && !((rx_info.crc_status() == gw::CrcStatus::CrcOk && state.forward_crc_ok)
             || (rx_info.crc_status() == gw::CrcStatus::BadCrc && state.forward_crc_invalid)
             || (rx_info.crc_status() == gw::CrcStatus::NoCrc && state.forward_crc_missing))
         {
             return;
         }
-    }
 
     let rxpk = match structs::RxPk::from_proto(&up) {
         Ok(v) => v,
