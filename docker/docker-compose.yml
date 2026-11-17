@@ -1,0 +1,65 @@
+services:
+
+  chirpstack-concentratord:
+
+    container_name: chirpstack-concentratord
+    image: xoseperez/chirpstack-concentratord
+    restart: unless-stopped
+
+    # Access to the concentrator, instead of running privileged
+    devices:
+      - /dev/ttyACM0        # USB concentrators
+    #  - /dev/spidev0.0     # SPI concentrators
+    #  - /dev/gpiochip0     # reset and power-enable GPIOs
+    group_add:
+      - "dialout"           # USB concentrators
+    #  - ${PGID_SPI:-999}   # SPI concentrators
+    #  - ${PGID_GPIO:-997}  # GPIOs
+
+    # IPC sockets shared with chirpstack-udp-forwarder
+    volumes:
+      - /tmp:/tmp
+
+    environment:
+      MODEL: "RAK7271"
+      INTERFACE: "USB"
+      #RESET_GPIO: 17
+      #POWER_EN_GPIO: 0
+      #HAS_GPS: 0
+      #REGION: "EU868"
+      #CHANNELS: "US915_0"
+      #DEBUG: "INFO"
+      #SOCKET_NAME: "concentratord"
+
+  chirpstack-udp-forwarder:
+
+    container_name: chirpstack-udp-forwarder
+    image: xoseperez/chirpstack-udp-forwarder
+    restart: unless-stopped
+
+    depends_on:
+      - chirpstack-concentratord
+
+    # IPC sockets shared with chirpstack-concentratord
+    volumes:
+      - /tmp:/tmp
+
+    environment:
+
+      # Log level (TRACE, DEBUG, INFO, WARN, ERROR). Defaults to INFO.
+      LOGGING_LEVEL: "INFO"
+
+      # The server defaults to The Things Network, eu1 cluster. Pick another
+      # cluster, or a The Things Industries tenant:
+      #TTI_REGION: "eu1"
+      #TTI_TENANT: "ttn"
+
+      # Or set the server explicitly:
+      #SERVER_HOST: "localhost"
+      #SERVER_PORT: 1700
+
+      # How often to ping the server (in seconds)
+      #KEEPALIVE_INTERVAL: 30
+
+      # Name of the socket to connect to (must be the same as in the concentratord service)
+      #SOCKET_NAME: "concentratord"

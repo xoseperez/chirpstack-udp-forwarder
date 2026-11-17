@@ -1,0 +1,86 @@
+#!/usr/bin/env bash
+
+# Entry point of the ChirpStack UDP Forwarder image: builds the configuration
+# from environment variables, then starts the forwarder.
+#
+#   bash start            start the forwarder
+#   bash start --render   print the configuration and exit
+
+source ./common.sh
+
+# -----------------------------------------------------------------------------
+# Defaults
+# -----------------------------------------------------------------------------
+
+# The server defaults to The Things Network, eu1 cluster. A TTI_TENANT other
+# than "ttn" builds the host of that The Things Industries tenant instead.
+# SERVER_HOST overrides both.
+TTI_REGION=${TTI_REGION:-"eu1"}
+TTI_TENANT=${TTI_TENANT:-"ttn"}
+if [[ "${TTI_TENANT}" == "ttn" ]]; then
+    SERVER_HOST=${SERVER_HOST:-"${TTI_REGION}.cloud.thethings.network"}
+else
+    SERVER_HOST=${SERVER_HOST:-"${TTI_TENANT}.${TTI_REGION}.cloud.thethings.industries"}
+fi
+SERVER_PORT=${SERVER_PORT:-1700}
+
+LOGGING_LEVEL=${LOGGING_LEVEL:-"INFO"}
+LOGGING_LEVEL=${LOGGING_LEVEL^^}
+KEEPALIVE_INTERVAL=${KEEPALIVE_INTERVAL:-30}
+SOCKET_NAME=${SOCKET_NAME:-"concentratord"}
+
+# -----------------------------------------------------------------------------
+# Checks
+# -----------------------------------------------------------------------------
+
+# The forwarder has no OFF level: it refuses to start with one.
+if [[ ! "${LOGGING_LEVEL}" =~ ^(TRACE|DEBUG|INFO|WARN|ERROR)$ ]]; then
+    fail "LOGGING_LEVEL must be one of TRACE, DEBUG, INFO, WARN or ERROR (got '${LOGGING_LEVEL}')"
+fi
+if [[ ! "${SERVER_PORT}" =~ ^[0-9]+$ ]]; then
+    fail "SERVER_PORT must be a port number (got '${SERVER_PORT}')"
+fi
+if [[ ! "${KEEPALIVE_INTERVAL}" =~ ^[0-9]+$ ]]; then
+    fail "KEEPALIVE_INTERVAL must be a number of seconds (got '${KEEPALIVE_INTERVAL}')"
+fi
+
+# -----------------------------------------------------------------------------
+# Configuration
+# -----------------------------------------------------------------------------
+
+CONFIG_FILE=./run/config.toml
+
+render chirpstack-udp-forwarder.toml.template "${CONFIG_FILE}" \
+    LOGGING_LEVEL SERVER_HOST SERVER_PORT KEEPALIVE_INTERVAL SOCKET_NAME
+
+if [[ "${1:-}" == "--render" ]]; then
+    cat "${CONFIG_FILE}"
+    exit 0
+fi
+
+# -----------------------------------------------------------------------------
+# Info
+# -----------------------------------------------------------------------------
+
+echo
+info "------------------------------------------------------------------"
+info "$( ./chirpstack-udp-forwarder -V )"
+info "LoRa(WAN) UDP packet forwarder"
+info "------------------------------------------------------------------"
+info "Logging level:        ${LOGGING_LEVEL}"
+info "UDP server:           ${SERVER_HOST}:${SERVER_PORT}"
+info "Keepalive interval:   ${KEEPALIVE_INTERVAL}s"
+info "Socket name:          ${SOCKET_NAME}"
+info "------------------------------------------------------------------"
+info "Resources: https://www.chirpstack.io/docs/chirpstack-udp-forwarder"
+info "           https://github.com/chirpstack/chirpstack-udp-forwarder"
+info "------------------------------------------------------------------"
+echo
+
+# -----------------------------------------------------------------------------
+# Start
+# -----------------------------------------------------------------------------
+
+wait_for_sockets "${SOCKET_NAME}"
+
+exec ./chirpstack-udp-forwarder -c "${CONFIG_FILE}"
