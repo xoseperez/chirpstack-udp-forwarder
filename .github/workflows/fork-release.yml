@@ -1,0 +1,133 @@
+name: Fork release
+
+# Builds this fork's v<upstream version>-r<n> tags into a draft GitHub Release,
+# e.g. v4.3.1-r1 is the first fork release based on upstream v4.3.1. Upstream's
+# dist job publishes to its S3 bucket, which this repository has no credentials
+# for. main.yml calls this once its tests have passed. The build steps mirror
+# upstream's dist job: port upstream changes to them here.
+on:
+  workflow_call:
+
+jobs:
+  dist:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      matrix:
+        target:
+          - x86_64-unknown-linux-musl
+          - aarch64-unknown-linux-musl
+          - armv7-unknown-linux-musleabihf
+    env:
+      TAG: ${{ github.ref_name }}
+    steps:
+      -
+        name: Checkout
+        uses: actions/checkout@v4
+      -
+        name: Set fork version
+        # Tag v4.3.1-r1 becomes crate version 4.3.1+r1. As semver build metadata
+        # it gives the Debian version 4.3.1+r1-1, which dpkg sorts above
+        # upstream's 4.3.1-1; a "-r1" pre-release would sort below it.
+        run: |
+          if ! [[ "$TAG" =~ ^v([0-9]+\.[0-9]+\.[0-9]+)-(r[0-9]+)$ ]]; then
+            echo "::error::Tag $TAG does not match v<major>.<minor>.<patch>-r<n>"
+            exit 1
+          fi
+          BASE="${BASH_REMATCH[1]}"
+          VERSION="$BASE+${BASH_REMATCH[2]}"
+
+          CURRENT=$(sed -n '/^\s*\[package\]/,/^\s*\[/ s/^\s*version = "\(.*\)"/\1/p' Cargo.toml)
+          if [ "$CURRENT" != "$BASE" ]; then
+            echo "::error::Tag $TAG is for upstream $BASE, but Cargo.toml is at $CURRENT"
+            exit 1
+          fi
+
+          sed -i "/^\s*\[package\]/,/^\s*\[/ s/^\(\s*version = \)\"${BASE//./\\.}\"/\1\"$VERSION\"/" Cargo.toml
+          grep -n "\"$VERSION\"" Cargo.toml
+      -
+        name: Install Nix
+        uses: cachix/install-nix-action@v31
+        with:
+          nix_path: nixpkgs=channel:nixos-26.05
+      -
+        name: Cargo cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-dist-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
+      -
+        name: Install dev dependencies
+        run: nix-shell --command "make dev-dependencies"
+      -
+        name: Build distributables
+        run: nix-shell --command "make dist-${{ matrix.target }}"
+      -
+        name: Rename packages
+        # Name the files after the tag (..._4.3.1-r1_amd64.deb) rather than
+        # 4.3.1+r1: a "+" in a release asset URL gets URL-encoded. dpkg orders
+        # packages by the version inside them, not the file name.
+        run: |
+          VERSION="${TAG#v}"
+          cd dist
+          for f in *.deb; do
+            new="${f%%_*}_${VERSION}_${f##*_}"
+            [ "$f" = "$new" ] || mv -v "$f" "$new"
+          done
+          for f in *.tar.gz; do
+            new="${f/"+r"/-r}"
+            [ "$f" = "$new" ] || mv -v "$f" "$new"
+          done
+          ls -la
+      -
+        name: Upload distributables
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    needs: dist
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      TAG: ${{ github.ref_name }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      -
+        name: Download distributables
+        uses: actions/download-artifact@v4
+        with:
+          pattern: dist-*
+          path: dist
+          merge-multiple: true
+      -
+        name: Checksums
+        run: |
+          cd dist
+          sha256sum -- * > SHA256SUMS
+          cat SHA256SUMS
+      -
+        name: Create draft release
+        # A draft, so the notes and assets can be reviewed before publishing.
+        # Re-running replaces the assets.
+        run: |
+          BASE="${TAG%-r*}"
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            gh release upload "$TAG" dist/* --clobber
+          else
+            gh release create "$TAG" dist/* \
+              --draft \
+              --verify-tag \
+              --title "$TAG" \
+              --notes "Based on upstream ChirpStack UDP Forwarder [$BASE](https://github.com/chirpstack/chirpstack-udp-forwarder/releases/tag/$BASE)."
+          fi
