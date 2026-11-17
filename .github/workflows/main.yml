@@ -6,6 +6,16 @@ on:
     tags:
       - 'v*'
   pull_request:
+  release:
+    types: [published]
+  # A release event runs the workflow file from the tagged commit, so a release
+  # on a tag that predates the GitHub release upload below (e.g. one synced from
+  # upstream) builds nothing. Running it by hand fills in such a release.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Tag of an existing GitHub release to build and attach binaries to
+        required: true
 
 jobs:
   tests:
@@ -14,6 +24,9 @@ jobs:
       -
         name: Checkout
         uses: actions/checkout@v4
+        with:
+          # Empty except on a manual run, where it selects the tag to build.
+          ref: ${{ inputs.tag }}
       - 
         name: Install Nix
         uses: cachix/install-nix-action@v31
@@ -40,8 +53,22 @@ jobs:
   dist:
     needs: tests
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v')
+    # Upstream publishes to the ChirpStack S3 bucket when a tag is pushed. Forks
+    # have no credentials for that bucket, so they attach the binaries to their
+    # GitHub releases instead, when a release is published or on a manual run.
+    if: >-
+      (github.repository == 'chirpstack/chirpstack-udp-forwarder'
+        && github.event_name == 'push'
+        && startsWith(github.ref, 'refs/tags/v'))
+      || (github.repository != 'chirpstack/chirpstack-udp-forwarder'
+        && (github.event_name == 'release' || github.event_name == 'workflow_dispatch'))
+    permissions:
+      # Needed to attach the binaries to a GitHub release.
+      contents: write
     strategy:
+      # Let the other architectures finish when one fails, so a single broken
+      # target does not leave the release without any binaries.
+      fail-fast: false
       matrix:
         target:
           - x86_64-unknown-linux-musl
@@ -51,6 +78,9 @@ jobs:
       -
         name: Checkout
         uses: actions/checkout@v4
+        with:
+          # Empty except on a manual run, where it selects the tag to build.
+          ref: ${{ inputs.tag }}
       - 
         name: Install Nix
         uses: cachix/install-nix-action@v31
@@ -75,6 +105,7 @@ jobs:
         run: nix-shell --command "make dist-${{ matrix.target }}"
       -
         name: Configure AWS credentials
+        if: github.repository == 'chirpstack/chirpstack-udp-forwarder'
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
@@ -84,5 +115,14 @@ jobs:
         name: Upload binaries to S3
         run: |
           aws s3 sync dist s3://builds.loraserver.io/chirpstack-udp-forwarder
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: github.repository == 'chirpstack/chirpstack-udp-forwarder'
+      -
+        name: Upload binaries to GitHub release
+        if: github.repository != 'chirpstack/chirpstack-udp-forwarder'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # Passed through the environment rather than interpolated into the
+          # script, so a tag name cannot inject shell commands.
+          TAG: ${{ github.event.release.tag_name || inputs.tag }}
+        run: gh release upload "$TAG" dist/* --clobber --repo "$GITHUB_REPOSITORY"
 
